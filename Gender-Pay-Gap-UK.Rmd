@@ -1,0 +1,1248 @@
+---
+title: "Gender Pay Gap in the UK"
+author: "Kostas Voulgaropoulos"
+date: "August of 2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Intro
+
+Much is told about **gender pay gap** and the **actions** needed (and taken) to overcome it.
+
+But have we managed to defeat it?
+Are we paying women less than men?
+And if so, are we mitigating that inequality across time?
+
+The **Gender Pay Gap Service** in the UK is concentrating relevant data since 2017, giving us the oppotrunity to seek answers to such questions.
+
+The current report seeks to deploy them and provide insights.
+
+## About the Dataset
+
+Data is downloaded from the [Official Website of the **Gender Pay Gap Service**](https://gender-pay-gap.service.gov.uk/) and span across the period **2017 - 2021**.
+
+
+After parsing all relevant CSVs, our dataframe more or less looks like: 
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE , echo = FALSE)
+
+#Global Variables
+for_download <- TRUE
+export_plots <- TRUE
+interactive_plots <- FALSE
+years <- 2017:2021
+men_color <- "#1518e8"
+women_color <- "#d61ea5"
+
+```
+
+
+```{r read data and libraries}
+
+
+#Function borrowed from Chad Ross - https://gist.github.com/chadr & https://chadross.org/
+ipak <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE)
+    invisible(sapply(pkg, require, character.only = TRUE))
+}
+
+#Wanted Libraries
+packages <- c("tidyverse", "plotly", "ggthemes", "maptools", "gpclib", "rgdal","gridExtra")
+#Call to function
+ipak(packages)
+
+
+
+
+if(for_download){
+for(year in years){
+
+  tem_df <- mutate(read.csv(paste0("https://gender-pay-gap.service.gov.uk/viewing/download-data/",year)), Year = year)
+  
+  pay_df <- if(exists("pay_df")){
+    pay_df %>% rbind(tem_df)
+  }else{
+      tem_df
+    }
+}
+
+#Add Sic Codes Description####
+
+sic_codes <- "https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/527619/SIC07_CH_condensed_list_en.csv" %>% read.csv()
+
+
+pay_df <- pay_df %>% 
+  
+  #pull(SicCodes) %>%
+  
+  separate(col = SicCodes ,sep = ",", into = paste0("Sic_Code_", 1:7)) %>% #view()
+  
+  mutate(Sic_Code = ifelse( 
+    
+    nchar(Sic_Code_1)<4, #if it is the dummy code 1 or just empty
+                              
+    Sic_Code_2, #then pick the second sic code
+    
+    Sic_Code_1 #else continue with the first code                        
+    
+    ),
+    #And turn it to integer for successful join
+    Sic_Code = as.integer(Sic_Code)) %>% 
+  
+  #mutate(first_sic_code = substr(SicCodes,1,5)) %>% 
+  
+  left_join(rename(sic_codes, "Sic_Code" = "SIC.Code"), by = "Sic_Code") 
+
+}else{
+  load("pay_df.RData")
+}
+
+
+cols_to_show <- c("EmployerName", 
+                  "PostCode",
+                  "Sic_Code", 
+                  "Description",
+                  "DiffMeanHourlyPercent",
+                  "DiffMedianHourlyPercent",
+                  "DiffMeanBonusPercent",
+                  "DiffMedianBonusPercent",
+                  "MaleBonusPercent",
+                  "FemaleBonusPercent",
+                  "MaleLowerQuartile",
+                  "FemaleLowerQuartile",
+                  "MaleTopQuartile",
+                  "FemaleTopQuartile",
+                  "EmployerSize",
+                  "Year"
+                  )
+
+str(pay_df[,cols_to_show])
+
+```
+
+Where:
+
+* The **Mean & Median Pay Columns** (DiffMeanHourlyPercent, DiffMedianHourlyPercent, etc.) stand for the [**Mean and Median % difference between male and female hourly pay (negative = women's mean hourly pay is higher).**](https://gender-pay-gap.service.gov.uk/viewing/download) Bear in mind that whenever these figures are **positive**, they signify a **larger pay on men**. So, for example a company that reported a *DiffMeanHourlyPercent* of 20, pays men 20% more than pays women.
+
+* **(Fe)MaleBonusPercent** indicates the Percentage of (fe)male employees paid a bonus.
+
+* Columns containing **Quartile** (MaleLowerQuartile, etc.) represent the percentage that each corporate level is occupied by each gender. MaleLowerQuartile + FemaleLowerQuartile (and so on for the rest of such columns) always **add up to 1**.
+
+The rest of the Columns are self-explanatory.
+
+[Here](https://gender-pay-gap.service.gov.uk/viewing/download) you can find the official descriptions published by the respective service.
+
+Let's start exploring our data.
+
+# Overview
+
+For starters, out of all companies, how many favor men and how many women?
+
+
+```{r diff_mean_hourly_percent per sector}
+
+
+#Mean Overall####
+
+no_of_companies_mean_pay <-  pay_df %>% 
+  
+  group_by( EmployerId,Year ) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMeanHourlyPercent > 0, "Men", "Women")#,
+          
+          #DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)
+          
+          ) %>%
+
+  group_by(Paid_Better,Year) %>% 
+  
+  summarize(Number_of_Companies = n() ) #%>% 
+  
+
+by_company_count <- 
+  
+  no_of_companies_mean_pay %>% 
+  
+  left_join( (no_of_companies_mean_pay %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Companies)) ) ,
+             by = "Year" ) %>%
+  mutate(Percent_of_Companies = round(Number_of_Companies / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Percent_of_Companies, 
+               fill = Paid_Better)) +
+  
+  geom_text(aes(x = Year, 
+               y = Percent_of_Companies*0.55,
+               label = paste0(Percent_of_Companies,"%") ),colour = "white", size = 4) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( title = "Mean Difference (%)",
+        x = "",
+        y = "% of Total Companies") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+#Median Overall#####
+
+no_of_companies_median_pay <-  pay_df %>% 
+  
+  group_by( EmployerId,Year ) %>%
+  
+  summarize(DiffMedianHourlyPercent = mean(DiffMedianHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMedianHourlyPercent > 0, "Men", "Women")#,
+          
+          #DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)
+          
+          ) %>%
+
+  group_by(Paid_Better,Year) %>% 
+  
+  summarize(Number_of_Companies = n() ) #%>% 
+  
+
+by_company_count_median <- 
+  
+  no_of_companies_median_pay %>% 
+  
+  left_join( (no_of_companies_median_pay %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Companies)) ) ,
+             by = "Year" ) %>%
+  mutate(Percent_of_Companies = round(Number_of_Companies / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Percent_of_Companies, 
+               fill = Paid_Better)) +
+  
+  geom_text(aes(x = Year, 
+               y = Percent_of_Companies*0.55,
+               label = paste0(Percent_of_Companies,"%") ),colour = "white", size = 4) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( title = "Median Difference (%)",
+        x = "",
+        y = "") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+
+
+if(interactive_plots){
+  
+
+  plotly::subplot(by_company_count, 
+                by_company_count_median) %>%
+  layout(title = list(text = paste0('By Far Most Companies Favor Men in Pay',
+                                    '<br>',
+                                    '<sup>',
+                                     'Mean Difference on the Left, Median on the Right','</sup>'))
+  )
+
+  
+}else{
+  
+  if(export_plots){
+    png("01. Percentage of Companies - Ordinary Pay.png")
+      gridExtra::grid.arrange(by_company_count, 
+                by_company_count_median, 
+                ncol = 2, 
+                top = "By Far Most Companies Favor Men in Pay"
+                )
+      dev.off()
+    
+    }
+  
+  gridExtra::grid.arrange(by_company_count, 
+                by_company_count_median, 
+                ncol = 2, 
+                top = "By Far Most Companies Favor Men in Pay"
+                )
+  
+  }
+
+
+```
+
+At first glance, the **vast majority of companies in the UK favor men over women in pay**.
+
+When considering the **Median** Difference in pay, inequalities appear to smooth a bit.
+One possible explanation for that is that the highest paid employees are men. This fact forces the mean difference towards the men's side.
+
+But we will examine it further later in this report.
+For now, we will go on with the **Mean instead of the Median Difference** because **we want to take into account such inequalities derived from extremely high pays**.
+
+Aside from that, a slight improvement seems to come into sight for 2021. But since this report is produced in mid-2021, **many companies haven't reported data yet**.
+
+A glance into the absolute numbers of companies favoring a gender might enlighten us:
+
+
+```{r number of companies absolute numbers}
+
+by_company_count <- 
+  
+  no_of_companies_mean_pay %>% 
+  
+  left_join( (no_of_companies_mean_pay %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Companies)) ) ,
+             by = "Year" ) %>%
+  mutate(Percent_of_Companies = round(Number_of_Companies / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Number_of_Companies, 
+               fill = Paid_Better), 
+           position = "stack") +
+  
+  geom_text(aes(x = Year, 
+               y = Number_of_Companies*0.55,
+               label = (Number_of_Companies) ),colour = "white", size = 4) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( title = "Most Companies Favor Men in Pay (Absolute Numbers this time)",
+        y = "Number of Companies",
+        x = "") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+
+
+if(interactive_plots){
+  ggplotly(by_company_count, tooltip = "Number_of_Companies")
+}else{
+    
+  if(export_plots){
+    png("02. Number of Companies - Ordinary Pay.png")
+    gridExtra::grid.arrange(by_company_count)
+    dev.off()
+  }
+  
+  by_company_count
+  
+  }
+
+
+```
+
+And indeed, data for 2021 is very scarce, just ```r pay_df %>% filter(Year == 2021) %>% nrow() ```. 
+
+That's probably the reason why a positive change appeared in the earlier plot.
+
+## Magnitude of Difference
+
+So far, we just counted each difference no matter its magnitude. 
+Even just a 0.01% difference is counted as favoring men (and a -0.01% for women respectively). 
+
+So, let's take a look at the actual **numbers of differences** to enlighten their magnitude.
+
+```{r}
+
+by_company_boxplot <- pay_df %>% 
+  
+  group_by( EmployerId ) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMeanHourlyPercent > 0, "Men", "Women"),
+          
+          DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)) %>%
+
+  #group_by(Paid_Better) %>% 
+  
+  #summarize(Count = n() ) %>% 
+  
+  ggplot( aes(y = (DiffMeanHourlyPercent), x = (Paid_Better), fill = Paid_Better  ) ) + 
+    
+  geom_boxplot() +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  labs( title = "Mean Pay Difference (%) for Each Company favoring a Gender",
+        x = "", y = "") +
+  
+  theme_minimal() +
+  
+  theme(legend.position = "none") +
+  
+  coord_flip()
+
+   
+#For reference in text
+median_diffs <- pay_df %>% 
+    
+    group_by( EmployerId ) %>%
+    
+    summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE) ) %>% 
+    
+    mutate( Paid_Better = ifelse(DiffMeanHourlyPercent > 0, "Men", "Women"),
+            
+            DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)) %>% group_by(Paid_Better) %>% summarize(Median_Diff = median(DiffMeanHourlyPercent))
+    
+
+if(interactive_plots){
+  ggplotly(by_company_boxplot)
+}else{
+    
+  if(export_plots){
+    png("03. Magnitude of Differences - Ordinary Pay.png")
+    gridExtra::grid.arrange(by_company_boxplot)
+    dev.off()
+  }
+  
+  by_company_boxplot
+  
+  }
+
+
+```
+
+To interpret a Boxplot (like the preceding plot) it's easier to consider an example of an 100 observations population. 
+
+In such an example: 
+
+* the **lower boundary** of each box represents the **25**th highest difference
+
+* the **line** inside each box represents the **50**th highest difference
+
+* the **upper boundary** of each box represents the **75**th highest difference
+
+* **dots** represent **outliers**.
+
+That being said, women's distribution differences (i.e. all negative differences found in the dataset) is ridiculusly **closer to zero** than the respective men's distribution of differences.
+
+In addition, **men's lower 25% starts where women's 75% ends**, not to mention their **median difference** (```r  median_diffs %>% filter(Paid_Better == "Men") %>% pull(Median_Diff)```% for men against a mere ```r  median_diffs %>% filter(Paid_Better == "Women") %>% pull(Median_Diff)```% for women).
+
+Overall, it seems that **when a company favors women in pay, the difference is small and close to 0%**, while **when men are paid more, their difference from women is more significant**.
+
+# Bonus
+
+Apart from ordinary pay, many companies compensate their employees with bonuses. 
+
+## Percent of each Gender receiving a Bonus pay
+
+As stated earlier, our dataset contains information about the percentage of the total (fe)male employees that received a bonus.
+
+Let's take a look at the **distribution of these percentages**:
+
+```{r percent of bonus}
+
+temp_df <- 
+  
+  pay_df %>% 
+  
+  select_if((str_detect(names(.),"aleBonusPercent|Year|Id"))) %>% 
+  
+  pivot_longer(cols = ends_with("BonusPercent"),
+               names_to = "Gender", values_to = "Percentage") %>% 
+  
+  mutate(Gender = str_extract(Gender, "Male|Female"))
+
+
+by_quartile_year_plot_bonus <- 
+  
+  temp_df %>% 
+  
+  ggplot() +
+
+  geom_density(aes(y = ..density.., 
+               x = Percentage,
+               fill = Gender ), alpha = .6 ) + 
+  
+  annotate("rect", xmin = 0, xmax = 6, ymin = .029, ymax = .037,
+  alpha = .1, color="orange", fill="blue") +
+  
+  annotate("rect", xmin = 84, xmax = 100, ymin = .005, ymax = .014,
+  alpha = .1, color="orange", fill="blue") +
+  
+  
+  scale_fill_manual(values = c(women_color,men_color)) +
+  
+  #facet_wrap(~Gender,nrow = 2) +
+  
+  theme_minimal() +
+  
+  theme(legend.position = "none") +
+  
+  labs(title = "Percentages of Employees Receiving a Bonus per Company by Gender" )
+
+
+
+if(interactive_plots){
+  
+  ggplotly(by_quartile_year_plot_bonus)
+  
+}else{
+    
+  if(export_plots){
+    png("04. Percentage of Receiving a Bonus by Gender.png")
+    gridExtra::grid.arrange(by_quartile_year_plot_bonus)
+    dev.off()
+  }
+  
+  by_quartile_year_plot_bonus
+  
+  }
+
+```
+
+The two genders' bonus percentages hopefully follow very similar distributions. 
+
+For the most part, the two distributions intersect.
+
+The only parts where the differentiate are: 
+
+* at the very start (from 0% to 3%) where once again **women experience many more 0%s of bonus than men**
+
+* at the very end, where men receive more 84%s to 95%s than do women.
+
+## Differences in Bonus Pay
+
+Apart from the percentage, what's going on with the differences in bonus pay?
+
+As with the ordinary pay section, we will explore:
+
+* the percentage of total companies that favor one gender in bonus pay
+
+* the magnitudes of those favors
+
+```{r by bonus}
+
+
+
+no_of_companies_mean_pay_bonus <-  pay_df %>% 
+  
+  filter(!is.na(DiffMeanBonusPercent)) %>%  
+
+  group_by( EmployerId,Year ) %>%
+  
+  summarize(DiffMeanBonusPercent = mean(DiffMeanBonusPercent, na.rm = TRUE) ) %>%
+  
+  mutate( Paid_Better = ifelse(DiffMeanBonusPercent > 0, "Men", "Women")) %>% 
+
+  group_by(Paid_Better,Year) %>% 
+  
+  summarize(Number_of_Companies = n() )
+  
+
+
+
+by_company_count_bonus <- 
+  
+  no_of_companies_mean_pay_bonus %>% 
+  
+  left_join( (no_of_companies_mean_pay_bonus %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Companies)) ) ,
+             by = "Year" ) %>% 
+  
+  mutate(Percent_of_Companies = round(Number_of_Companies / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Percent_of_Companies, 
+               fill = Paid_Better)) +
+  
+  geom_text(aes(x = Year, 
+               y = Percent_of_Companies * 0.7,
+               label = paste0(Percent_of_Companies,"%") ),colour = "white", size = 4) +
+  
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( subtitle = "By Mean Difference (%)",
+        x = "",
+        y = "% of Total Companies") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+
+by_company_bonus_plot <- 
+  
+  pay_df %>% 
+  
+  group_by( EmployerId ) %>%
+  
+  summarize(DiffMeanBonusPercent = mean(DiffMeanBonusPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMeanBonusPercent > 0, "Men", "Women"),
+          
+          DiffMeanBonusPercent = abs(DiffMeanBonusPercent)) %>%
+
+  #A Company reported a 3848.2% mean difference in bonus. It's a probably an entry mistake...
+  #And there are many extremely large values that probably concern a mistake
+  #We will keep only those under 300%
+  filter(DiffMeanBonusPercent <300) %>%
+  
+  #group_by(Paid_Better) %>% 
+  
+  #summarize(Count = n() ) %>% 
+  
+  ggplot(  ) + 
+    
+ 
+  geom_violin( aes(y = (DiffMeanBonusPercent), x = (Paid_Better), fill = Paid_Better  ) ) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  labs( subtitle = "Magnitude of Differences",
+        y = "Mean Difference (%)", x = "") +
+  
+  theme_minimal() +
+  
+  coord_flip() +
+
+  theme(legend.position = "none", axis.text.y = element_text(angle = 90)) 
+
+
+if(interactive_plots){
+  plotly::subplot(by_company_count_bonus, by_company_bonus_plot) %>%   
+    layout(title = list(text = paste0('By Far Most Companies Favor Men in Bonus',
+                                    '<br>',
+                                    '<sup>',
+                                     'Mean Difference (%) on the Left, Magnitude of Difference on the Right','</sup>'))
+  )
+
+    
+}else{
+  
+  if(export_plots){
+    png("05. Differences in Bonus by Gender.png")
+     gridExtra::grid.arrange(by_company_count_bonus, 
+                          by_company_bonus_plot, 
+                          nrow = 1,
+                          top = 'By Far Most Companies Favor Men in Bonus')
+     dev.off()
+    
+  }
+  
+  gridExtra::grid.arrange(by_company_count_bonus, 
+                          by_company_bonus_plot, 
+                          nrow = 1,
+                          top = 'By Far Most Companies Favor Men in Bonus')
+  
+  }
+
+
+```
+
+Very similarly with the ordinary pay,
+
+- most companies pay greater bonuses to men than to women
+
+- when women receive a greater bonnus, the difference with men's bonus is **usually close to zero**, in contrast with men
+
+# By Quartiles
+
+Let's now explore the rankings structure of the UK companies.
+
+Our dataset contains information about the **composition** of their:
+* Lower 
+* Lower Middle
+* Upper Middle and
+* Top 
+level executives.
+
+As an example, if a company's lower level is consisted of 70% women, the men's respective percentage will be 30% and they always add up to 1.
+
+## Regardless of Year
+
+Let's first take a look at their composition regardless of the year:
+
+
+```{r by quartiles}
+
+temp_df <- 
+  
+  pay_df %>% 
+  
+  select_if((str_detect(names(.),"Quartile|Year|Id"))) %>%
+  
+  pivot_longer(cols = ends_with("Quartile"),
+               names_to = "Quartile", values_to = "Percentage") %>%
+  
+  mutate(Gender = str_extract(Quartile, "Male|Female"),
+         Level = factor(str_remove(str_remove(Quartile, "Male|Female"), "Quartile"),
+                          levels = c("Lower", "LowerMiddle", "UpperMiddle", "Top") ) ) 
+
+
+by_quartile_plot <- temp_df %>% 
+  
+  #group_by(Year,Gender,Level) %>%
+  
+  #summarize(Percentage = mean(Percentage)) %>% #view()
+  
+  ggplot(  ) +
+
+  geom_violin(aes(x = Gender, 
+               y = Percentage,
+               fill = Gender )) + 
+  
+  scale_fill_manual(values = c(women_color,men_color)) +
+  
+  facet_wrap(~Level) +
+  
+  theme_minimal() +
+  
+  labs(x = "") +
+  
+  theme(legend.position = "none") +
+  
+  labs(title = "Presence in each Level Regardless of Year" )
+
+
+if(interactive_plots){
+  ggplotly(by_quartile_plot)
+}else{
+  
+  if(export_plots){
+    png("06. Presence in Levels Regardless of Year.png")
+    gridExtra::grid.arrange(by_quartile_plot)
+    dev.off()
+  }  
+  by_quartile_plot
+  
+  }
+  
+  
+```
+
+It seems that women **dominate lower and lower middle levels**, while **men prevail the top ones**. 
+
+In other words, most companies report 75%s of women (and 25%s for men respectively) in their lower quartile and vice versa for their top quartiles.
+
+That also explains the discrepancy shown in the first plot between the mean and median pay.
+**Mean pay tends towards men** because they **hold the highest positions** (and thus the highest salaries) in most companies.
+
+## By Quartiles and Year
+
+Is this tendency weakened across time? Are things getting more diverse in the steps of the corporate ladder? 
+
+```{r quart and year}
+
+by_quartile_year_plot <- 
+  
+  temp_df %>% 
+  
+  #group_by(Year,Gender,Level) %>%
+  
+  #summarize(Percentage = mean(Percentage)) %>% #view()
+  
+  ggplot(  ) +
+
+  geom_violin(aes(x = Gender, 
+               y = Percentage,
+               fill = Gender )) + 
+  
+  scale_fill_manual(values = c(women_color,men_color)) +
+  
+  facet_grid(Year~Level) +
+  
+  theme_minimal() +
+  
+  theme(legend.position = "none") +
+  
+  labs(title = "Presence in each Level" )
+
+
+if(interactive_plots){
+  ggplotly(by_quartile_year_plot)
+}else{
+    if(export_plots){
+      png("07. Presence in Levels.png")
+      gridExtra::grid.arrange(by_quartile_year_plot)
+      dev.off()
+    }
+  
+  by_quartile_year_plot
+  
+  }
+
+```
+
+It appears that no.
+
+The same pattern is observed every year. 
+Men on top, women underneath them.
+
+The only **exception** is year **2021**, which, as we saw earlier, contains way too **few observations** to present a clear picture.
+
+# By Sector
+
+Could some of the inequalities we observed so far be attributed to some sectors (such as Science, Technology, Engineering, Mathematics) that pay well and are dominated by a gender?
+
+So first, which are the top 10 sectors that pay better each gender?
+
+```{r top 10 sectors}
+
+temp_df <- 
+  
+pay_df %>% 
+  
+  group_by( Description ) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMeanHourlyPercent > 0, "Men", "Women"),
+          
+          DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)
+          
+          ) %>% 
+  
+  group_by(Paid_Better) %>%
+  
+  top_n(n = 10, wt = DiffMeanHourlyPercent) %>%
+  
+  mutate(Description = fct_reorder(Description, (DiffMeanHourlyPercent))) %>%
+  
+  rename("Sector" = "Description")
+  
+
+max_diff <- temp_df %>% pull(DiffMeanHourlyPercent) %>% max()
+
+
+men_plot <-   
+  
+  temp_df %>%
+  
+  filter(Paid_Better == "Men") %>%
+  
+  ggplot( aes(x = Sector, y = DiffMeanHourlyPercent) ) +
+
+  geom_point( aes(col = Paid_Better) ) + 
+  
+  geom_segment(aes(x=Sector, xend=Sector, y=0, yend=DiffMeanHourlyPercent)) +  
+  
+  scale_y_continuous(limits = c(0,max_diff))+
+  
+  coord_flip() +
+  
+  scale_color_manual(values = c(men_color)) +
+  
+  labs(x = "", y = "", title = "", subtitle = "") +
+  
+  theme_minimal() +
+  
+  theme(legend.position = "none")
+  
+
+women_plot <- 
+  
+  temp_df %>%
+  
+  filter(Paid_Better == "Women") %>%
+  
+  ggplot( aes(x = Sector, y = DiffMeanHourlyPercent) ) +
+
+  geom_point( aes(col = Paid_Better) ) + 
+  
+  geom_segment(aes(x=Sector, xend=Sector, y=0, yend=DiffMeanHourlyPercent)) +  
+    
+  scale_y_continuous(limits = c(0,max_diff))+
+  
+  coord_flip() +
+  
+  scale_color_manual(values = c(women_color)) +
+  
+  labs(x = "", y = "", title = "", subtitle = "") +
+  
+  theme_minimal() +
+  
+  theme(legend.position = "none")
+  
+
+if(interactive_plots){
+  plotly::subplot(men_plot, women_plot,nrows = 2 ) %>%
+    layout(title = "Sectors Favoring A Gender and Magnitude of Favor (%)")
+  
+}else{
+    
+  if(export_plots){
+    
+    png("08. Sectors Favoring A Gender.png")
+    gridExtra::grid.arrange(men_plot, 
+                          women_plot,
+                          nrow = 2,
+                          top = "Sectors Favoring A Gender and Magnitude of Favor (%)")
+    dev.off()
+  }
+  
+  gridExtra::grid.arrange(men_plot, 
+                          women_plot,
+                          nrow = 2,
+                          top = "Sectors Favoring A Gender and Magnitude of Favor (%)")
+  
+  }
+
+
+```
+
+No pattern can be observed regarding the nature of those sectors.
+
+But what can be observed is yet again the **magnitude of differences**.
+
+The sector that pays women best, ```r temp_df %>% filter(Paid_Better == "Women") %>% top_n(n = 1,  wt = DiffMeanHourlyPercent) %>% pull(Sector) %>% as.character()```, is paying women just ```r temp_df %>% filter(Paid_Better == "Women") %>% top_n(n = 1,  wt = DiffMeanHourlyPercent) %>% pull(DiffMeanHourlyPercent) %>% round(2)``` % more than is paying men.
+
+On the other hand, the **10th** sector that pays men best, ```r temp_df %>% filter(Paid_Better == "Men") %>% top_n(n = 1,  wt = -DiffMeanHourlyPercent) %>% tail(1) %>% pull(Sector) %>% as.character()```, is paying better even than women's best, at ```r temp_df %>% filter(Paid_Better == "Men") %>% top_n(n = 1,  wt = -DiffMeanHourlyPercent) %>% tail(1) %>% pull(DiffMeanHourlyPercent) %>% round(2)```%.
+
+
+Additionaly, out of all sectors, what percentage is paying men better than women?
+
+```{r sectors percentages}
+
+no_of_sectors_mean_pay <-  
+  
+  pay_df %>% 
+  
+  group_by( Description , Year ) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMeanHourlyPercent > 0, "Men", "Women")#,
+          
+          #DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)
+          
+          ) %>%
+
+  group_by(Paid_Better,Year) %>% 
+  
+  summarize(Number_of_Sectors = n() ) #%>% 
+  
+
+by_sector_count <- 
+  
+  no_of_sectors_mean_pay %>% 
+  
+  left_join( (no_of_sectors_mean_pay %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Sectors)) ) ,
+             by = "Year" ) %>%
+  mutate(Percent_of_Sectors = round(Number_of_Sectors / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Percent_of_Sectors, 
+               fill = Paid_Better)) +
+  
+  geom_text(aes(x = Year, 
+               y = Percent_of_Sectors*0.55,
+               label = paste0(Percent_of_Sectors,"%") ),colour = "white", size = 4) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( subtitle = "By Mean Difference (%)",
+        x = "",
+        y = "% of Total Companies") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+#Median Overall#####
+
+no_of_sectors_median_pay <-  pay_df %>% 
+  
+  group_by( Description,Year ) %>%
+  
+  summarize(DiffMedianHourlyPercent = mean(DiffMedianHourlyPercent, na.rm = TRUE) ) %>% 
+  
+  mutate( Paid_Better = ifelse(DiffMedianHourlyPercent > 0, "Men", "Women")#,
+          
+          #DiffMeanHourlyPercent = abs(DiffMeanHourlyPercent)
+          
+          ) %>%
+
+  group_by(Paid_Better,Year) %>% 
+  
+  summarize(Number_of_Sectors = n() ) #%>% 
+  
+
+by_sectors_count_median <- 
+  
+  no_of_sectors_median_pay %>% 
+  
+  left_join( (no_of_sectors_median_pay %>% 
+                group_by(Year) %>%
+                summarize(Total = sum(Number_of_Sectors)) ) ,
+             by = "Year" ) %>%
+  mutate(Percent_of_Sectors = round(Number_of_Sectors / Total, 2)*100) %>%
+
+
+  ggplot( ) + 
+    
+  geom_col(aes(x = Year, 
+               y = Percent_of_Sectors, 
+               fill = Paid_Better)) +
+  
+  geom_text(aes(x = Year, 
+               y = Percent_of_Sectors*0.55,
+               label = paste0(Percent_of_Sectors,"%") ),colour = "white", size = 4) +
+  
+  scale_fill_manual(values = c(men_color,women_color)) +
+  
+  #facet_wrap(~Year) + 
+  
+  labs( subtitle = "By Median Difference (%)",
+        x = "",
+        y = "% of Total Sectors") +
+  
+  theme_classic() + 
+  
+  theme(legend.position = "none")
+
+
+
+if(interactive_plots){
+  plotly::subplot(by_sector_count, 
+                by_sectors_count_median) %>%
+  layout(title = list(text = paste0('By Far Most Sectors Favor Men in Pay',
+                                    '<br>',
+                                    '<sup>',
+                                     'Mean Difference on left, Median on Right','</sup>'))
+  )
+}else{
+  
+  if(export_plots){
+    png("09. Differences by Sector.png")
+    gridExtra::grid.arrange(by_sector_count, 
+                by_sectors_count_median, 
+                top = "By Far Most Sectors Favor Men in Pay" , nrow = 1)  
+    dev.off()
+  }
+  
+  gridExtra::grid.arrange(by_sector_count, 
+                by_sectors_count_median, 
+                top = "By Far Most Sectors Favor Men in Pay" , nrow = 1)  
+  
+  }
+
+```
+
+Yet again, most sectors pay men better than women.
+
+# By Region
+
+Apart from the sectors, could regions contribute to inequalities?
+
+```{r by post code}
+
+#Compute Mean Difference in Pay per Region
+per_postal_df <- 
+  
+  pay_df %>% 
+  
+  mutate(PostCode = str_remove_all(toupper(str_extract(PostCode, "^[\\w]{1,2}")), "\\d") ) %>% #select(PostCode,PostCode_) 
+
+  group_by(PostCode) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent, na.rm = TRUE))
+
+
+if(for_download){
+  # Download UK postcode polygon Shapefile
+download.file(
+  "http://www.opendoorlogistics.com/wp-content/uploads/Data/UK-postcode-boundaries-Jan-2015.zip",
+  "postal_shapefile"
+)
+unzip("postal_shapefile")
+
+# Read the downloaded Shapefile from disk
+postal <- maptools::readShapeSpatial("./Distribution/Areas")
+
+}else{
+  
+  load("Postal.RData")
+
+}
+
+# Assign each "region" an unique id
+postal.count <- nrow(postal@data)
+postal@data$id <- 1:postal.count
+
+# Transform SpatialPolygonsDataFrame to regular data.frame in ggplot format
+postal.fort <- ggplot2::fortify(postal, region='id')
+
+
+# Add "region" id to frequency data
+df <- merge(per_postal_df, 
+            postal@data,
+            by.x="PostCode", 
+            by.y="name")
+
+
+# Merge frequency data onto geogrphical postal polygons
+postal.fort <- merge(postal.fort,  df , by="id", all.x=T, all.y=F)
+postal.fort <- postal.fort[order(postal.fort$order),] # Reordering since ggplot expect data.frame in same order as "order" column
+postal.fort <- postal.fort[!(is.na(postal.fort$PostCode)),]
+
+
+map_of_uk <- (ggplot(postal.fort) + 
+  
+  geom_polygon(aes(x = long, 
+                   y = lat, 
+                   group = PostCode, 
+                   fill = DiffMeanHourlyPercent )) +
+    
+  coord_fixed() +
+  
+  theme_void() +
+  
+  labs(title = "No Region Favors Women in Pay" ,
+    x = "", y = "", fill = "Diff in Mean Hourly Compensation (%)") +
+    
+  scale_fill_gradient(  low = "#bf9f9f",
+  high = "#b00000",
+  space = "Lab",
+  na.value = "grey50",
+  guide = "colourbar",
+  aesthetics = "fill") + 
+  
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+  
+
+)
+
+if(interactive_plots){
+  ggplotly(map_of_uk)
+}else{
+  
+  if(export_plots){
+    png("10. By Region.png")
+    gridExtra::grid.arrange(map_of_uk)
+    dev.off()
+  }
+    
+  map_of_uk
+  
+  }
+
+
+```
+
+First of all, **in no region women are getting paid better than men**.
+
+Apart from that, **no region seems to concentrate certain discrepancies** (either low or high), at least at first glance.
+
+One could just say that the South has more sharpened inequalities in comparison to the British North, but still needs further examination.
+
+# By Employer Size
+
+Could employer Size be a factor that determines the gender pay gap?
+
+Let's take a look at each size's average difference of pay by gender:
+
+```{r per size}
+
+per_size_df <- 
+  
+  pay_df %>% 
+  
+  filter(!(EmployerSize == "Not Provided")) %>%
+  
+  group_by(EmployerSize) %>%
+  
+  summarize(DiffMeanHourlyPercent = mean(DiffMeanHourlyPercent)) %>% 
+  
+  mutate(EmployerSize = factor(EmployerSize, 
+                               levels = c("Less than 250", 
+                                          "250 to 499",
+                                          "500 to 999", 
+                                          "1000 to 4999", 
+                                          "5000 to 19,999", 
+                                          "20,000 or more") ))
+
+
+per_size_plot <- per_size_df %>% 
+  
+  ggplot() + 
+  
+  geom_bar(aes(x = EmployerSize, y = DiffMeanHourlyPercent, fill = DiffMeanHourlyPercent ), stat = "identity", width = .4 ) +
+  
+  scale_fill_gradient(high = men_color, low = "deepskyblue") +
+  
+  coord_flip() +
+  
+  theme_minimal() + 
+  
+  theme(legend.position = "none") + 
+  
+  labs(y = "Mean Hourly Compensation (%) Difference - Positive Figures Favoring Men", 
+       x = "", 
+       title = "Women are Paid Less No Matter the Company Size")
+
+
+if(interactive_plots){
+  ggplotly(per_size_plot,tooltip = "DiffMeanHourlyPercent" )
+}else{
+    
+  if(export_plots){
+    png("11. By Company Size.png")
+    gridExtra::grid.arrange(per_size_plot)
+    dev.off()
+  }
+  
+  per_size_plot
+  
+  }
+
+```
+
+Pretty much **pay is biased towards men** no matter the size of company. 
+
+# Conclusion
+
+* **Overall**, women are paid less than men, both in terms of **ordinary pay** and **bonus**.
+
+* **Upper level** quartiles of the corporate ladder are dominated by **men**, while **lower** ones are dominated by **women**. 
+
+* In the majority of **sectors** women are on average paid less than men.
+
+* In all **regions** and **company sizes**, women are on average paid less than men.
